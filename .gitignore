@@ -1,0 +1,21 @@
+# Runtime data (user dialogue, profiles)
+data/
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Local soul.config (may contain deployment-specific persona)
+soul.config
+
+# IDE
+.idea/
+.vscode/
+
+# Env secrets
+.env
+.env.*
