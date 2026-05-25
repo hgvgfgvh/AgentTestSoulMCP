@@ -1,7 +1,4 @@
-// soul-mcp：人格/议题 Soul MCP Server（Phase-0 骨架）。
-//
-// 对外工具：soul_store、soul_retrieve（字符串协议）。
-// 内部：StubEngine；profile/events 整理 Agent 未实现。
+// soul-mcp：Soul MCP（三件套：history.facts.jsonl + person.yaml + soul.agent.yaml）
 package main
 
 import (
@@ -12,41 +9,39 @@ import (
 	"path/filepath"
 	"strings"
 
+	"AgentTestSoulMCP/internal/config"
 	"AgentTestSoulMCP/internal/engine"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var (
-	dataDir    = flag.String("data", "", "数据目录（默认 ./data 或 SOUL_MCP_DATA_DIR）")
-	configPath = flag.String("config", "", "soul.config 路径（默认同目录 soul.config）")
+	dataDir      = flag.String("data", "", "SOUL_MCP_DATA_DIR")
+	agentCfgPath = flag.String("agent-config", "", "agentConfig/soul-agent.yaml")
+	engineKind   = flag.String("engine", "", "soul | stub")
 )
 
 func main() {
 	flag.Parse()
 	log.SetOutput(os.Stderr)
 
-	dir := strings.TrimSpace(*dataDir)
-	if dir == "" {
-		dir = strings.TrimSpace(os.Getenv("SOUL_MCP_DATA_DIR"))
-	}
-	if dir == "" {
-		dir = "data"
-	}
-	cfg := strings.TrimSpace(*configPath)
-	if cfg == "" {
-		cfg = strings.TrimSpace(os.Getenv("SOUL_MCP_CONFIG"))
-	}
-	if cfg == "" {
-		cfg = "soul.config"
-	}
-	if !filepath.IsAbs(cfg) {
-		if exe, err := os.Executable(); err == nil {
-			cfg = filepath.Join(filepath.Dir(exe), cfg)
+	dir := resolveDataDir()
+	acPath := resolveAgentConfig()
+	kind := resolveEngineKind()
+
+	var eng engine.Engine
+	var err error
+	switch strings.ToLower(kind) {
+	case "stub":
+		eng, err = engine.NewStubEngine(dir, "")
+		log.Printf("[soul-mcp] engine=stub")
+	default:
+		eng, err = engine.NewSoulEngine(dir, "", acPath)
+		if ac, e2 := config.LoadAgentConfig(acPath); e2 == nil && ac != nil {
+			paths := ac.ResolveDataPaths(dir)
+			log.Printf("[soul-mcp] engine=4-async history=%s person=%s map=%s", paths.HistoryDir, paths.Person, paths.Map)
 		}
 	}
-
-	eng, err := engine.NewStubEngine(dir, cfg)
 	if err != nil {
 		log.Fatalf("engine: %v", err)
 	}
@@ -54,60 +49,84 @@ func main() {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "agent-test-soul",
 		Title:   "AgentTest Soul MCP",
-		Version: "0.1.0-phase0",
+		Version: "0.3.0-llm-triad",
 	}, nil)
-
 	registerTools(server, eng)
 
 	t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
-	log.Printf("[soul-mcp] stdio transport data_dir=%s config=%s phase=0-stub", dir, cfg)
 	if err := server.Run(context.Background(), t); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
 
+func resolveDataDir() string {
+	if d := strings.TrimSpace(*dataDir); d != "" {
+		return d
+	}
+	if d := strings.TrimSpace(os.Getenv("SOUL_MCP_DATA_DIR")); d != "" {
+		return d
+	}
+	return "data"
+}
+
+func resolveAgentConfig() string {
+	if p := strings.TrimSpace(*agentCfgPath); p != "" {
+		return p
+	}
+	return config.ResolveAgentConfigPath()
+}
+
+func resolveEngineKind() string {
+	if k := strings.TrimSpace(*engineKind); k != "" {
+		return k
+	}
+	if k := strings.TrimSpace(os.Getenv("SOUL_MCP_ENGINE")); k != "" {
+		return k
+	}
+	return "soul"
+}
+
 func registerTools(server *mcp.Server, eng engine.Engine) {
 	type storeArgs struct {
-		Content       string `json:"content" jsonschema:"required,WebUI 对话等材料（字符串）"`
-		Source        string `json:"source,omitempty" jsonschema:"Host 标识，如 agenttest-webui"`
-		Kind          string `json:"kind,omitempty" jsonschema:"粗分类，如 dialogue"`
-		CorrelationID string `json:"correlation_id,omitempty" jsonschema:"Host 关联 ID，如 turn_id"`
+		Content       string `json:"content" jsonschema:"required,WebUI 对话"`
+		Source        string `json:"source,omitempty"`
+		Kind          string `json:"kind,omitempty"`
+		CorrelationID string `json:"correlation_id,omitempty"`
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "soul_store",
-		Description: `存入 WebUI 对话等人格/议题材料（字符串协议）。同步 ACK，内部异步整理（Phase-0 仅追加 stub 日志）。
-返回 JSON 字符串：accepted、job_id、skipped 等。`,
+		Name:        "soul_store",
+		Description: `存入 WebUI 对话。内部 LLM 拆分为 history.facts.jsonl，并更新 person.yaml。soul.agent.yaml 只读。`,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args storeArgs) (*mcp.CallToolResult, any, error) {
 		out := eng.Store(ctx, engine.StoreInput{
-			Content:       args.Content,
-			Source:        args.Source,
-			Kind:          args.Kind,
-			CorrelationID: args.CorrelationID,
+			Content: args.Content, Source: args.Source, Kind: args.Kind, CorrelationID: args.CorrelationID,
 		})
 		return textResult(out), nil, nil
 	})
 
 	type retrieveArgs struct {
-		Context   string `json:"context" jsonschema:"required,Host 本轮上下文字符串（含用户输入）"`
-		QueryHint string `json:"query_hint,omitempty" jsonschema:"可选补充检索意图"`
+		Context   string `json:"context" jsonschema:"required,用户当前输入上下文"`
+		QueryHint string `json:"query_hint,omitempty"`
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "soul_retrieve",
-		Description: `取出人格/议题参考 hints（字符串协议）。须传 context；同步、快速。Phase-0 为 stub 占位。
-返回 JSON 字符串：hints、skipped 等。不得包含 exec_simple_match 等 Memory 路由字段。`,
+		Name:        "soul_retrieve",
+		Description: `取出协作 hints。LLM 关联历史事实 + person.yaml + soul.agent.yaml，编排为 Markdown。`,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args retrieveArgs) (*mcp.CallToolResult, any, error) {
-		out := eng.Retrieve(ctx, engine.RetrieveInput{
-			Context:   args.Context,
-			QueryHint: args.QueryHint,
-		})
+		out := eng.Retrieve(ctx, engine.RetrieveInput{Context: args.Context, QueryHint: args.QueryHint})
 		return textResult(out), nil, nil
 	})
 }
 
 func textResult(jsonText string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: jsonText},
-		},
+		Content: []mcp.Content{&mcp.TextContent{Text: jsonText}},
+	}
+}
+
+func init() {
+	if _, err := os.Stat("agentConfig/soul-agent.yaml"); err == nil {
+		if os.Getenv("SOUL_MCP_AGENT_CONFIG") == "" {
+			abs, _ := filepath.Abs("agentConfig/soul-agent.yaml")
+			_ = os.Setenv("SOUL_MCP_AGENT_CONFIG", abs)
+		}
 	}
 }

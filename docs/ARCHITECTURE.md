@@ -1,6 +1,6 @@
 # Soul MCP — 架构
 
-> 状态：**规划**（2026-05-24）。下文为目标架构；实现后须同步 `IMPLEMENTATION_PROGRESS.md` 与 `ARCHITECTURE_DRIFT.md`。
+> **状态**：**已实现 v4**（`phase=4-async-pipeline`）。本文描述 **本仓库** 内部结构；Host 仅需知工具契约（见 `DESIGN_INTENT.md` §4）。
 
 ---
 
@@ -9,21 +9,18 @@
 ```text
 ┌──────────────── AgentTest (Host) ─────────────────┐
 │  WebUI → portal.RunRouterTurn                      │
-│    1. soulhook.RetrieveTurn  → stdio soul_retrieve │
+│    1. soulhook.RetrieveTurn  → soul_retrieve       │
 │    2. memoryhook.RetrieveTurn → memory_retrieve    │
-│    3. PlanAgent / Affective                        │
-│    …                                               │
+│    3. PlanAgent …                                  │
 │    N. soulhook.StoreTurn (async) → soul_store      │
-│    N. memoryhook.StoreTurn (async) → memory_store  │
 └───────────────────────┬───────────────────────────┘
-                        │ stdio MCP
+                        │ MCP stdio
                         ▼
-┌──────────── AgentTestSoulMCP (本进程) ─────────────┐
-│  MCP Server: soul_store | soul_retrieve            │
-│  soul.config (只读基座)                             │
-│  data/: profile.jsonl, events.jsonl, episodes/,    │
-│         soul_overlay/, queue/                      │
-│  internal/: pipeline, template, optional LLM     │
+┌──────────── AgentTestSoulMCP ──────────────────────┐
+│  soul_store  → 异步 4 路 LLM + Go 预取              │
+│  soul_retrieve → 快慢双轨 LLM + recall 检索         │
+│  只读: soul.agent.yaml                             │
+│  可写: storage/history/, person.md, map.md, cache  │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -31,172 +28,238 @@
 
 ## 2. 进程与部署
 
-| 项 | 规划 |
+| 项 | 说明 |
 |----|------|
-| 二进制名 | `soul-mcp.exe`（Windows）/ `soul-mcp`（Unix） |
-| 协议 | MCP stdio，与 `memory-mcp` 相同模式 |
-| 配置 | 环境变量 `SOUL_*`；旁路文件 `soul.config` |
-| 数据目录 | `SOUL_DATA_DIR` 或默认 `./data` |
+| 二进制 | `soul-mcp.exe` / `soul-mcp` |
+| 协议 | MCP stdio |
+| 引擎配置 | `agentConfig/soul-agent.yaml`（`SOUL_MCP_AGENT_CONFIG`） |
+| 数据目录 | `SOUL_MCP_DATA_DIR`，默认 `./data` |
+| LLM | `SOUL_MCP_LLM_API_BASE` / `SOUL_MCP_API_KEY` / `SOUL_MCP_LLM_MODEL` |
+| Agent 灵魂路径 | `SOUL_MCP_SOUL_DOC` → `soul.agent.yaml` |
 
-Host `config/app.yaml` 规划段：
+Host 示例（主项目 `config/app.yaml`，仅引用）：
 
 ```yaml
 plan_soul_hook:
   enabled: true
-  mcp_command: ["C:/DATA/GODATA/AgentTestSoulMCP/soul-mcp.exe"]
+  mcp_command: "…/soul-mcp.exe"
   mcp_env:
-    SOUL_DATA_DIR: "..."
-    # SOUL_STORE_LLM_*  optional
-    # SOUL_RETRIEVE_LLM: "0"
+    SOUL_MCP_DATA_DIR: "…/data"
+    SOUL_MCP_LLM_API_BASE: "https://api.deepseek.com"
+    SOUL_MCP_LLM_API_KEY: "…"
 ```
 
 ---
 
-## 3. 模块划分（实现时）
+## 3. 模块划分
 
 | 包/目录 | 职责 |
 |---------|------|
-| `cmd/soul-mcp` | MCP 入口、工具注册 |
-| `internal/mcp` | `soul_store` / `soul_retrieve` handler |
-| `internal/pipeline` | store 队列、job 消费 |
-| `internal/profile` | profile.jsonl CRUD、去重、confidence 衰减 |
-| `internal/events` | events.jsonl、议题合并、指代索引 |
-| `internal/template` | retrieve 无 LLM 组装 |
-| `internal/llm` | 可选 store 整理 / retrieve compose |
-| `internal/config` | 加载 `soul.config` + overlay |
+| `cmd/soul-mcp` | MCP 入口、`soul_store` / `soul_retrieve` 注册 |
+| `internal/engine` | `SoulEngine`：store/retrieve 编排 |
+| `internal/engine/store_pipeline.go` | 异步四路 store |
+| `internal/engine/retrieve_pipeline.go` | 快慢双轨 retrieve |
+| `internal/soulagent` | 6 段 LLM 提示任务 + hints 格式化 |
+| `internal/persistence` | 按天历史、`person.md`、`map.md`、`llm_cache.json` |
+| `internal/recall` | 多通道召回 + RRF（时间窗/实体/文本/因果） |
+| `internal/config` | `agentConfig` 加载与路径解析 |
+| `internal/llm` | OpenAI 兼容 Chat |
+| `internal/filter` | 空 context / 闲聊跳过 |
+| `internal/response` | JSON 响应封装 |
 
-**刻意不设**：`internal/graph` 执行经验图、factworld、BM25 路由（属 Memory）。
+**不设**：factworld、exec_simple 路由、Memory 工具注册。
 
 ---
 
-## 4. Store 管道
+## 4. Store 管道（异步分治）
 
 ```text
 soul_store (sync)
-    ├─ validate JSON → enqueue job → return accepted
-    └─ [async worker]
-            ├─ append raw → data/episodes/{episode_id}.json
-            ├─ optional LLM extract (profile deltas + events)
-            ├─ rules fallback if no LLM
-            ├─ merge profile (dedupe by key)
-            ├─ upsert events (same topic → update last_mentioned)
-            └─ optional: write overlay *suggestion* (not auto-apply)
+    ├─ filter.ShouldSkipStore (可选 skip_chitchat)
+    ├─ return { accepted, job_id, phase }
+    └─ [async processStore]
+            ├─ [并行 wave1]
+            │     ├─ Task1 RunStoreDailyLLM    → daily.AppendToday(entries)
+            │     ├─ Task2 RunStorePersonLLM   → person.Write
+            │     └─ Task3 RunStoreMapLLM      → map.Write
+            └─ [wave2]
+                  └─ Task4 RunStorePrefetchQuestionsLLM
+                        → recall.Select × N 问题
+                        → llm_cache.Write
 ```
 
-**LLM 在 store**：仅 MCP 内部；Host **不等待**整理完成（S2）。
+无 LLM 时：仅 Task1 降级一条四维骨架事实写入今日文件。
+
+**禁止**：单 LLM 调用同时输出 person + map + entries（违反 S6）。
 
 ---
 
-## 5. Retrieve 管道
+## 5. Retrieve 管道（快慢双轨）
 
 ```text
-soul_retrieve (sync, budgeted)
-    ├─ load soul.config (readonly)
-    ├─ load soul_overlay/active.yml if exists
-    ├─ match profile (keyword / optional embedding later)
-    ├─ match events (user input + context BM25 or tag overlap)
-    ├─ [optional] LLM compose if SOUL_RETRIEVE_LLM=1 && within timeout
-    └─ template → persona_prompt + event_context + retrieve_meta
+soul_retrieve (sync)
+    ├─ 读取 person.md, map.md, llm_cache.json, soul.agent.yaml
+    ├─ loadAllFacts() = 最近 N 天按天 JSONL + 可选 legacy history.facts.jsonl
+    │
+    ├─ [有 LLM]
+    │     ├─ Gate LLM (cache + map + person + query + soul)
+    │     │     ├─ sufficient → 快通道 hints_markdown
+    │     │     └─ else → retrieval_tags { entities, categories, date_hints, keywords }
+    │     │              → recall.Select(tags + query)
+    │     │              → Compose LLM (facts JSON + map + person + cache + soul)
+    │     └─ FormatFinalHints(soul + body)
+    │
+    └─ [无 LLM] FallbackRetrieveV4 + FormatFinalHints
 ```
 
-**默认路径**：模板组装（S6），P99 目标 &lt; 50ms（无 LLM、本地 data）。
+**`retrieval_tags`**：慢通道检索线索，**不是**哲学四维的复刻；Go 用其增强 `recall.Select` 的 query。
 
 ---
 
-## 6. 数据布局
+## 6. 数据布局（运行时）
 
 ```text
-AgentTestSoulMCP/
-  soul.config              # 基座（git 可跟踪 example，生产本地）
-  soul.config.example
-  data/                    # 运行时（gitignore）
-    profile.jsonl
-    events.jsonl
-    episodes/
-      {episode_id}.json
-    soul_overlay/
-      active.yml
-      suggestions/
-    queue/
-      pending.jsonl
+{SOUL_MCP_DATA_DIR}/
+  storage/history/
+    2026-05-24.jsonl          # 冷存储：四维事实
+    2026-05-25.jsonl
+  person.md                   # 用户画像（LLM 任务2）
+  map.md                      # 热索引（LLM 任务3）
+  llm_cache.json              # 预取缓存（任务4）
+  soul.agent.yaml             # 建议放在 exe 同级或 SOUL_MCP_SOUL_DOC
+  history.facts.jsonl         # 可选，旧版只读合并检索
+
+agentConfig/
+  soul-agent.yaml             # 路径、阈值、6 段 llm.*_system、fact_dimensions
 ```
 
-### 6.1 profile.jsonl 行示例
+### 6.1 按天事实行示例（四维）
 
 ```json
 {
-  "key": "user.preferred_name",
-  "value": "老王",
-  "confidence": 0.9,
-  "source_episode_id": "ep-uuid",
-  "updated_at": "2026-05-22T10:00:00Z"
+  "id": "fact-20260524-0",
+  "summary": "讨论 Game01 渲染管线锁语义",
+  "evidence": "用户：并发锁导致…",
+  "stored_at": "2026-05-24T13:00:00Z",
+  "phenomenon": {
+    "entity": ["Game01", "LibGDX-RenderPipeline"],
+    "category": ["Architecture", "CodeBug"],
+    "artifacts": ["src/lock/gate.go"]
+  },
+  "spatiotemporal": {
+    "chronos": "2026-05-24T13:00:00Z",
+    "kairos": "Critical_Debug",
+    "domain": "portal/gateway"
+  },
+  "causality": {
+    "intent": "优化并发锁带来的语义丢失",
+    "action": ["read_file"],
+    "outcome": "Pitfall_Route",
+    "evolution_potential": "Medium"
+  },
+  "existential": {
+    "cognitive_align": "Calibrating",
+    "mood_tone": "Focused",
+    "persona_shift": ["Macro_Architect"]
+  },
+  "relations": [{"type": "about", "ref": "Agent-Router-Thesis"}]
 }
 ```
 
-### 6.2 events.jsonl 行示例
+### 6.2 llm_cache.json 示例
 
 ```json
 {
-  "event_id": "evt-uuid",
-  "kind": "paper",
-  "title": "某某架构论文",
-  "summary": "讨论结论与实验设置",
-  "entities": ["项目 Alpha"],
-  "last_mentioned": "2026-05-22T10:00:00Z",
-  "evidence_snippet": "用户：昨天那篇论文的实验部分…"
+  "updated_at": "2026-05-25T03:00:00Z",
+  "job_id": "soul-job-…",
+  "predicted_questions": ["昨天 Game01 锁问题解决了吗", "…"],
+  "blocks": [
+    {
+      "question": "昨天 Game01 锁问题解决了吗",
+      "source_refs": ["2026-05-24.jsonl"],
+      "content": "[{ …facts json… }]"
+    }
+  ],
+  "aggregate_markdown": "…"
 }
 ```
 
 ---
 
-## 7. Host 注入格式（建议）
+## 7. Host 注入格式（冻结）
 
-Host 将 MCP 返回拼入 `planInput`（顺序 **先于** Memory hints）：
+Host `plan/soulhook` 从 `soul_retrieve` JSON 取 **`hints`**，与 Memory hints、用户原话拼接（Soul 在前）：
 
 ```markdown
-## 协作人格（Soul）
-{persona_prompt}
+{soul_hints 全文}
 
-## 近期议题与事件（Soul）
-{event_context}
+{memory_hints}
+
+---
+用户本轮输入:
+{user_input}
 ```
 
-分隔符与标题以 `soul.config.prompt_blocks` 为准；变更须 bump `version`。
+`hints` 内已含 **Agent 灵魂** 与 **Soul 协作提示** 两节（MCP 内 `FormatFinalHints`）。
 
 ---
 
-## 8. 可观测性
+## 8. 检索子系统（`internal/recall`）
+
+| 通道 | 触发 | 说明 |
+|------|------|------|
+| 时间 | query 含昨天/上周/ISO 日期 | `chronos` / `stored_at` 日历窗 |
+| 实体/范畴 | 词重合 | `phenomenon.entity/category/artifacts` |
+| 文本 | 词重合 | 全条 `SearchDocument()` |
+| 因果 | 失败/成功等词 | `causality.outcome` 加权 |
+
+多路 **RRF** 融合后取 `retrieve.max_facts_in_context`（默认 24）条给 Compose LLM。
+
+---
+
+## 9. 配置要点（`soul-agent.yaml`）
+
+| 键 | 默认 | 含义 |
+|----|------|------|
+| `store.max_facts_per_turn` | 12 | 每轮最多写入事实条数 |
+| `store.max_predicted_questions` | 5 | 预取问题数上限 |
+| `store.map_recent_days` | 7 | map 与预取扫描最近天数 |
+| `retrieve.max_hints_runes` | 2000 | 最终 hints 截断 |
+| `llm.store_daily_system` 等 | 见 yaml | 六段独立提示词 |
+
+---
+
+## 10. 可观测性
 
 | 信号 | 用途 |
 |------|------|
-| `retrieve_meta.degraded` | Host 决定是否提示用户「记忆暂不可用」 |
-| store queue depth | 运维背压 |
-| episode 归档 | 人工审计抽取质量 |
-
-Companion Web 控制台：**非 MVP**；可后续对齐 Memory MCP `:8091` 模式。
+| stderr `[soul-mcp] store daily/person/map/prefetch` | 异步任务成败 |
+| `phase` in JSON | 版本：`4-async-pipeline` |
+| `hints` 长度 | Host `OnTurnRetrieve hints_len` 日志 |
 
 ---
 
-## 9. 安全与隐私
+## 11. 安全与隐私
 
-- `data/` 含用户对话摘录：**不得**提交进公开 git（`.gitignore`）。  
-- `user_id` 隔离目录（实现时 `data/users/{id}/`）。  
-- 无密钥写入 `soul.config`；LLM API key 仅 `mcp_env`。
-
----
-
-## 10. 测试策略（实现后）
-
-| 层级 | 内容 |
-|------|------|
-| 单元 | template 组装、profile merge、event upsert |
-| MCP 契约 | store ACK + async job；retrieve 字段禁止 Memory 键 |
-| Host 集成 | 两轮 WebUI 场景（见 `ACCEPTANCE_RULES.md`） |
+- `data/` 含对话摘录：**不得**提交公开 git。  
+- API Key 仅环境变量，不进 yaml。  
+- 多租户未实现时勿混用同一 `SOUL_MCP_DATA_DIR`。
 
 ---
 
-## 11. 版本与兼容
+## 12. 测试
 
-- 工具名冻结前可使用 `phase=0-docs-only`。  
-- JSON 字段增删须 bump `retrieve_meta.schema_version`。  
-- Host 与 MCP 版本协商：环境变量 `SOUL_MCP_MIN_HOST`（待定）。
+```bash
+go test ./...
+# Host 边界（主项目）: go run ./scripts/soul_boundary_test
+```
+
+---
+
+## 13. 版本
+
+| phase | 含义 |
+|-------|------|
+| `0-stub` | 占位引擎 |
+| `2-llm-triad` | 旧三件套单文件（已 superseded） |
+| `4-async-pipeline` | 当前：四路 store + 双轨 retrieve + 按天四维 |

@@ -1,33 +1,48 @@
 # AgentTestSoulMCP
 
-外置 **Soul MCP**（人格 / 用户画像 / 议题续接 / 协作适配）服务，与主项目 `AgentTest` 通过 **Host 钩子**（规划：`plan_soul_hook`）集成。
+外置 **Soul MCP**（v4）：异步四路存入 + 快慢双轨取出。MCP 工具 **`soul_store` / `soul_retrieve` 接口不变**。
 
-与 `AgentTestMemoryMCP` **同级、解耦**：Memory 管「怎么执行」；Soul 管「在聊什么、用户是谁、怎么说话」。
+## 运行时目录（`SOUL_MCP_DATA_DIR`）
 
-## 状态
+| 路径 | 维护方 | 作用 |
+|------|--------|------|
+| `storage/history/YYYY-MM-DD.jsonl` | LLM 任务1（按天） | 冷存储：带四维标签的事实 |
+| `person.md` | LLM 任务2 | 用户画像（习惯、话术、思维、情绪等） |
+| `map.md` | LLM 任务3 | 热索引：摘要 + 指向落地文件 |
+| `llm_cache.json` | LLM 任务4 + Go 检索 | 预测问题的预取缓存 |
+| `soul.agent.yaml` | **用户只读** | Agent 人格（`SOUL_MCP_SOUL_DOC`） |
+| `agentConfig/soul-agent.yaml` | 运维 | 6 段独立 LLM 提示 + 参数 |
 
-| 项 | 状态 |
-|----|------|
-| 设计/架构/验收文档 | **初版**（2026-05-24） |
-| Go 实现 / `soul-mcp` 可执行文件 | **未开始** |
-| Host `plan_soul_hook` | **未开始**（主项目） |
+旧版 `history.facts.jsonl` 若仍存在，retrieve 时会合并检索（只读兼容）。
 
-## 文档
+## 存入（异步，4 次独立 LLM）
 
-| 文件 | 用途 |
-|------|------|
-| [docs/DESIGN_INTENT.md](./docs/DESIGN_INTENT.md) | 子系统宪法 |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 模块与数据流 |
-| [docs/ACCEPTANCE_RULES.md](./docs/ACCEPTANCE_RULES.md) | 可执行验收 |
-| [docs/ARCHITECTURE_DRIFT.md](./docs/ARCHITECTURE_DRIFT.md) | 意图 vs 实现差异 |
-| [docs/IMPLEMENTATION_PROGRESS.md](./docs/IMPLEMENTATION_PROGRESS.md) | 实现进度 |
+1. **按天落地** → `storage/history/{today}.jsonl`
+2. **用户画像** → `person.md`
+3. **地图** → `map.md`（含标签与文件指针）
+4. **预取**（wave2）：预测 N 个问题（默认 5，可配置）→ 查 map + 落地文件 → `llm_cache.json`
 
-## 配置样例
+## 取出（快慢双轨）
 
-- [soul.config.example](./soul.config.example) — Agent **人格基座**（MCP retrieve 时合并；默认只读）
+1. 载入：`llm_cache` + `map.md` + `person.md` + 用户输入 → **Gate LLM**
+2. **快通道**：信息足够 → 直接总结（贴合画像）
+3. **慢通道**：输出 `retrieval_tags` → Go `recall.Select` 捞落地文件 → **Compose LLM** 总结
+4. 最终 hints = **Agent 灵魂（只读）** + Soul 协作提示
 
-## 主项目交叉引用
+## 配置
 
-- Host 宪法：`AgentTest/Agent编码防止架构坍塌的处理方法论/DESIGN_INTENT.md`（阶段三 F3-1～F3-9）
-- Host 目标架构：`.../ARCHITECTURE.md` §15
-- Memory 边界：`AgentTestMemoryMCP/docs/DESIGN_INTENT.md`（不承载人格/口头禅）
+```yaml
+store:
+  max_predicted_questions: 5
+  map_recent_days: 7
+```
+
+环境变量：`SOUL_MCP_LLM_API_BASE`、`SOUL_MCP_LLM_API_KEY`、`SOUL_MCP_DATA_DIR`、`SOUL_MCP_SOUL_DOC`
+
+## 构建
+
+```powershell
+go build -o soul-mcp.exe ./cmd/soul-mcp
+```
+
+`phase` 字段：`4-async-pipeline`

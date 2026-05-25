@@ -1,95 +1,117 @@
 # Soul MCP — 验收规则
 
-> 状态：**规划**（全部未实现）。实现后勾选 `IMPLEMENTATION_PROGRESS.md`。
+> **对齐实现**：v4 `4-async-pipeline`（2026-05-25）。勾选状态见 `IMPLEMENTATION_PROGRESS.md`。
 
 ---
 
 ## A. 工具面（MCP）
 
-| ID | 规则 | 验证方式 |
-|----|------|----------|
-| A1 | 仅注册 `soul_store`、`soul_retrieve` | MCP `tools/list` 快照 |
-| A2 | 入参/出参为 **字符串 JSON** | 契约测试 |
-| A3 | `soul_retrieve` 响应 **无** `exec_simple_match` / Memory 路由键 | JSON schema 测试 |
-| A4 | `soul_store` 同步 &lt; 200ms 返回 `accepted`（不含 async 整理） | 压测单测 |
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| A1 | 仅注册 `soul_store`、`soul_retrieve` | `tools/list` | ✅ |
+| A2 | 入参/出参为字符串 JSON | 契约测试 | ✅ |
+| A3 | `soul_retrieve` 响应 **无** Memory 路由键；含 `hints` | JSON 解析 | ✅ |
+| A4 | `soul_store` 同步快速返回 `accepted` + `job_id` | 单测/边界测试 | ✅ |
+| A5 | `phase` 为 `4-async-pipeline`（或兼容旧 phase） | 响应字段 | ✅ |
 
 ---
 
-## B. Store 管道
+## B. Store 管道（四路异步）
 
-| ID | 规则 | 验证方式 |
-|----|------|----------|
-| B1 | 合法 `context` 入队后 `episodes/{id}.json` 存在 | 集成测试 |
-| B2 | 无 LLM 时 rules 仍可写入至少 1 条 event 或 profile | fixture 对话 |
-| B3 | 有 LLM 时失败降级 rules，不丢 episode 原文 | mock LLM down |
-| B4 | **不**自动改写 `soul.config` | 文件 mtime 断言 |
-| B5 | overlay 仅经显式路径写入 `soul_overlay/` | 审计目录列表 |
-
----
-
-## C. Retrieve 管道
-
-| ID | 规则 | 验证方式 |
-|----|------|----------|
-| C1 | 默认无 LLM 仍返回非空 `persona_prompt`（含 config 基座） | 空 data 目录测试 |
-| C2 | 预置 events 后，用户短问句可命中 `event_context` | 「昨天那篇论文」fixture |
-| C3 | 超预算截断 `event_context`，`retrieve_meta` 标明 | token 计数单测 |
-| C4 | 超时返回 `degraded: true`，Host 可继续 | 注入慢 LLM mock |
-| C5 | `persona_prompt` 含 profile 中 `preferred_name` 类条目 | 两轮对话集成 |
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| B1 | 有 LLM 时任务1 写入 `storage/history/YYYY-MM-DD.jsonl` | 文件存在且 JSONL 合法 | ✅ 需 LLM |
+| B2 | 任务2 可更新 `person.md`（带 `.bak`） | store 后 mtime/内容 | ✅ 需 LLM |
+| B3 | 任务3 可更新 `map.md` | 同上 | ✅ 需 LLM |
+| B4 | 任务4 可写入 `llm_cache.json`（含 predicted_questions） | 文件 JSON | ✅ 需 LLM |
+| B5 | 四路为 **独立** LLM 提示（非单 prompt 合并） | 代码审查 `store_tasks.go` | ✅ |
+| B6 | 无 LLM 时降级：仅今日文件一条事实 | 无 API 环境测试 | ✅ |
+| B7 | **不**改写 `soul.agent.yaml` | mtime/只读断言 | ✅ |
+| B8 | store 失败不导致同步 ACK 失败 | 注入 LLM 错误 | ✅ |
 
 ---
 
-## D. 与 Memory 隔离
+## C. 历史事实 — 四维标签
 
-| ID | 规则 | 验证方式 |
-|----|------|----------|
-| D1 | Soul store **不**调用 Memory MCP | 进程边界 / 无 memory 工具注册 |
-| D2 | Soul 文档与 Memory 文档互引边界一致 | 人工评审清单 |
-| D3 | 同一段口头禅 **不**出现在 Memory facts 主路径（Host 配置下 E2E） | 双 MCP 集成测试 |
-
----
-
-## E. Host 集成（AgentTest）
-
-| ID | 规则 | 验证方式 |
-|----|------|----------|
-| E1 | `soul_retrieve` 在 `memory_retrieve` **之前** | gateway 单测 / 日志顺序 |
-| E2 | Store 源为 WebUI 序列化，非 Behavior tool 日志 | mock 序列化器 |
-| E3 | Soul 宕机时 Plan 仍完成一轮 | 杀 soul-mcp 进程测试 |
-| E4 | `plan_soul_hook.enabled: false` 时零调用 | 配置测试 |
-
-主项目对应：`AgentTest/.../ACCEPTANCE_RULES.md` §J。
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| C1 | 每条含 `phenomenon` / `spatiotemporal` / `causality` / `existential` 对象 | JSON schema 抽检 | ⚠️ 依赖 LLM |
+| C2 | `entity` / `category` / `artifacts` 语义符合设计 | 人工/黄金对话 | ⬜ |
+| C3 | `chronos` 空时由系统补 `stored_at` | `AppendDay` 单测 | ✅ |
+| C4 | 旧版 `tags`/`entities` 只读兼容 `NormalizeLegacy` | 单测 | ✅ |
 
 ---
 
-## F. 场景验收（人工 / E2E）
+## D. Retrieve 管道（快慢双轨）
 
-**场景 F-1 — 跨会话议题**
-
-1. 会话 A：用户与 Agent 讨论「项目 X」「论文 Y」≥3 轮；回合结束触发 store。  
-2. 会话 B（新 session）：用户仅输入「昨天论文 Y 的结论是什么？」  
-3. **通过**：`event_context` 含 Y；Plan 回复不索要全文背景。
-
-**场景 F-2 — 口头禅 / 称呼**
-
-1. 用户说「叫我老王」「少说废话」。  
-2. 下一轮 store 完成后新 retrieve。  
-3. **通过**：`persona_prompt` 可见对应 profile；回复长度变短（人工抽检）。
-
-**场景 F-3 — 降级**
-
-1. 停止 soul-mcp。  
-2. 用户正常提问。  
-3. **通过**：门户有回复；无 panic；可选日志 `soul hook degraded`。
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| D1 | 无 LLM 时仍返回非空 `hints`（含 soul + 模板） | engine 单测 | ✅ |
+| D2 | 有 LLM 时 Gate 可走快通道或吐 `retrieval_tags` | mock/integration | ⚠️ 需 LLM |
+| D3 | 慢通道经 `recall.Select` 再 Compose | 代码路径 | ✅ |
+| D4 | 最终 `hints` 含 **Agent 灵魂** 节（只读摘录） | 字符串断言 | ✅ |
+| D5 | 问「昨天」类问题可命中时间窗（有昨日数据） | `recall` 单测 | ✅ |
+| D6 | 超 `max_hints_runes` 截断 | 配置 + FormatFinalHints | ✅ |
 
 ---
 
-## 验收命令（实现后填入）
+## E. 与 Memory 隔离
+
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| E1 | Soul 进程 **无** Memory 工具 | MCP list | ✅ |
+| E2 | hints **无** `exec_simple_match` | 边界测试 M05 | ✅ |
+| E3 | 人格/议题不写 Memory facts（Host E2E） | 主项目双 MCP 测试 | ⬜ |
+
+---
+
+## F. Host 集成（AgentTest，契约级）
+
+| ID | 规则 | 验证方式 | 状态 |
+|----|------|----------|------|
+| F1 | `soul_retrieve` 在 `memory_retrieve` **之前** | gateway 日志 | ✅ |
+| F2 | Store 材料为 WebUI 对话 | `BuildWebUIDialogueContent` | ✅ |
+| F3 | Soul 失败时 Plan 仍继续（空 hints） | 杀进程测试 | ✅ |
+| F4 | `plan_soul_hook.enabled: false` 零调用 | 配置测试 | ✅ |
+| F5 | Host 只消费 `hints` 字段 | `extractHintsField` | ✅ |
+
+---
+
+## G. 场景验收（人工 / E2E）
+
+**G-1 — 跨会话议题**
+
+1. 会话 A：讨论项目/论文 ≥3 轮 → store。  
+2. 会话 B：「昨天论文 Y 的结论？」  
+3. **通过**：hints 含 Y 相关事实或地图指针；Plan 不索要全文背景。
+
+**G-2 — 称呼 / 习惯**
+
+1. 用户「叫我老王」→ store。  
+2. 下一轮 retrieve。  
+3. **通过**：person 或 hints 体现称呼。
+
+**G-3 — 预取快通道**
+
+1. store 完成且 `llm_cache` 非空。  
+2. 用户问与 predicted_questions 相近的一句。  
+3. **通过**：Gate 倾向 sufficient（人工抽检）。
+
+**G-4 — 降级**
+
+1. 停止 soul-mcp 或清空 LLM env。  
+2. 用户提问。  
+3. **通过**：门户有回复；hints 为空或模板。
+
+---
+
+## 验收命令
 
 ```bash
-# Soul MCP 仓库
+# 本仓库
+cd AgentTestSoulMCP
 go test ./...
 
-# Host（集成，待 soulhook 存在）
-go test ./plan/soulhook/...
+# Host 边界（主项目根目录）
+go run ./scripts/soul_boundary_test
 ```

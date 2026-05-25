@@ -24,8 +24,11 @@ type RetrievePayload struct {
 	Phase      string `json:"phase"`
 }
 
-// PhaseStub 当前阶段标识。
+// PhaseStub Phase-0 占位引擎。
 func PhaseStub() string { return "0-stub" }
+
+// PhaseSoul v4 异步四路 store + 快慢双轨 retrieve。
+func PhaseSoul() string { return "4-async-pipeline" }
 
 // FormatStore 返回 JSON 字符串。
 func FormatStore(p StorePayload) string {
