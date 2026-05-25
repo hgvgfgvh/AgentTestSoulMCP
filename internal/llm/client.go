@@ -21,6 +21,24 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// StoreLLMEnabled store 四路 LLM（默认：已配置 API 则 true；SOUL_MCP_LLM_EXTRACT=0 关闭）。
+func StoreLLMEnabled() bool {
+	if v := strings.TrimSpace(os.Getenv("SOUL_MCP_LLM_EXTRACT")); v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	_, ok := ConfigFromEnv()
+	return ok
+}
+
+// RetrieveLLMEnabled retrieve Gate/Compose LLM（默认：已配置 API 则 true；SOUL_MCP_RETRIEVE_LLM=0 关闭）。
+func RetrieveLLMEnabled() bool {
+	if v := strings.TrimSpace(os.Getenv("SOUL_MCP_RETRIEVE_LLM")); v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	_, ok := ConfigFromEnv()
+	return ok
+}
+
 // ConfigFromEnv SOUL_MCP_LLM_* 环境变量。
 func ConfigFromEnv() (Client, bool) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("SOUL_MCP_LLM_API_BASE")), "/")
@@ -49,17 +67,11 @@ func ConfigFromEnv() (Client, bool) {
 	}, true
 }
 
-// LLMExtractEnabled P1 store LLM。
-func LLMExtractEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("SOUL_MCP_LLM_EXTRACT"))
-	return v == "1" || strings.EqualFold(v, "true")
-}
+// LLMExtractEnabled 同 StoreLLMEnabled（兼容旧名）。
+func LLMExtractEnabled() bool { return StoreLLMEnabled() }
 
-// LLMRetrieveComposeEnabled P1 retrieve 编排。
-func LLMRetrieveComposeEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("SOUL_MCP_RETRIEVE_LLM"))
-	return v == "1" || strings.EqualFold(v, "true")
-}
+// LLMRetrieveComposeEnabled 同 RetrieveLLMEnabled（兼容旧名）。
+func LLMRetrieveComposeEnabled() bool { return RetrieveLLMEnabled() }
 
 type chatReq struct {
 	Model    string        `json:"model"`

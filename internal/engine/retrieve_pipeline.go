@@ -19,7 +19,11 @@ func (e *SoulEngine) runRetrieve(ctx context.Context, query string) string {
 	cacheDoc, _ := e.cache.Read()
 	cacheMD := cacheDoc.RenderMarkdown()
 
-	client, hasLLM := llm.ConfigFromEnv()
+	hasLLM := llm.RetrieveLLMEnabled()
+	var client llm.Client
+	if hasLLM {
+		client, _ = llm.ConfigFromEnv()
+	}
 	all := e.loadAllFacts()
 
 	if !hasLLM {

@@ -16,7 +16,11 @@ import (
 
 func (e *SoulEngine) processStore(jobID string, in StoreInput) {
 	ctx := context.Background()
-	client, hasLLM := llm.ConfigFromEnv()
+	hasLLM := llm.StoreLLMEnabled()
+	var client llm.Client
+	if hasLLM {
+		client, _ = llm.ConfigFromEnv()
+	}
 	dialogue := in.Content
 	source := strings.TrimSpace(in.Source)
 	dayKey := time.Now().Format("2006-01-02")
@@ -68,12 +72,14 @@ func (e *SoulEngine) processStore(jobID string, in StoreInput) {
 	go func() {
 		defer wg.Done()
 		recentSummary := e.summarizeRecentDays(e.agentCfg.Store.MapRecentDays)
-		newMap, mapErr = soulagent.RunStoreMapLLM(ctx, dialogue, mapMD, recentSummary, e.agentCfg, client)
+		availFiles := persistence.FormatAvailableHistoryFiles(e.paths.HistoryDir)
+		newMap, mapErr = soulagent.RunStoreMapLLM(ctx, dialogue, mapMD, recentSummary, availFiles, e.agentCfg, client)
 		if mapErr != nil {
 			log.Printf("[soul-mcp] store map LLM: %v", mapErr)
 			return
 		}
 		if newMap != "" {
+			newMap = persistence.SanitizeMapMarkdown(newMap, e.paths.HistoryDir)
 			if err := e.mapDoc.Write(newMap); err != nil {
 				log.Printf("[soul-mcp] map write: %v", err)
 			}

@@ -89,6 +89,11 @@ func (e *SoulEngine) Store(ctx context.Context, in StoreInput) string {
 	})
 }
 
+// WaitAsyncStore 等待当前已提交的异步 store 任务完成（开发台轮询用）。
+func (e *SoulEngine) WaitAsyncStore() {
+	e.wg.Wait()
+}
+
 func (e *SoulEngine) Retrieve(ctx context.Context, in RetrieveInput) string {
 	if skip, reason := filter.ShouldSkipRetrieve(in.Context); skip {
 		return response.FormatRetrieve(response.RetrievePayload{

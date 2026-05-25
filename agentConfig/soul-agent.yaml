@@ -1,10 +1,9 @@
-# Soul MCP v4 — 异步四路 store + 快慢双轨 retrieve
+# Soul MCP v4 — agentConfig
 # 落地：storage/history/YYYY-MM-DD.jsonl | person.md | map.md | llm_cache.json
-# 只读：soul.agent.yaml（Agent 人格，LLM 不可改）
 
 id: soul-agent
 version: 4
-description: 分治法异步存入；取出时预取缓存+地图+画像，快/慢双轨 LLM
+description: 异步四路 store + 快慢双轨 retrieve
 
 files:
   history_dir: "storage/history"
@@ -17,24 +16,39 @@ files:
 fact_dimensions:
   phenomenon:
     entity:
-      description: "交互的核心指向物"
+      description: "交互的核心指向物（项目名、模块、论文题）"
+      examples: ["Game01", "LibGDX-RenderPipeline", "RAG-Lock"]
     category:
-      values: ["Architecture", "CodeBug", "Algorithm", "ProductLog", "Topic"]
+      description: "技术或业务范畴"
+      values: ["Architecture", "CodeBug", "Algorithm", "ProductLog", "Topic", "Person", "Place", "Preference"]
     artifacts:
-      description: "文件路径或配置指针"
+      description: "文件路径或配置（对话中明确出现才写）"
+      examples: ["workspace/ToDoList/042.json", "src/lock/gate.go"]
   spatiotemporal:
     chronos:
-      description: "ISO 8601"
+      description: "ISO 8601；无则留空由系统补 stored_at"
     kairos:
+      description: "项目生命周期节点"
       values: ["Project_Initialization", "Major_Refactor", "Critical_Debug", "Milestone_Release", "Routine_Turn"]
     domain:
-      examples: ["portal/gateway", "portal/webui"]
+      description: "逻辑作用域"
+      examples: ["portal/gateway", "portal/webui", "soul-mcp/console"]
   causality:
+    intent:
+      description: "用户终极诉求一句"
+    action:
+      description: "工具或技能名列表"
     outcome:
       values: ["Success_Route", "Pitfall_Route", "User_Aborted", "In_Progress", "Unknown"]
+    evolution_potential:
+      values: ["High", "Medium", "Low"]
   existential:
     cognitive_align:
       values: ["Perfect", "Misaligned", "Calibrating"]
+    mood_tone:
+      values: ["Focused", "Anxious", "Exploratory", "Neutral"]
+    persona_shift:
+      examples: ["Macro_Architect", "Pragmatic_Coder"]
 
 store:
   max_facts_per_turn: 12
@@ -48,32 +62,31 @@ retrieve:
 
 llm:
   store_daily_system: |
-    你是「按天落地」整理器。输入：落地日文件名 + WebUI 一轮对话。
-    将可复用信息拆为 JSONL 条目（含 phenomenon/spatiotemporal/causality/existential 四维标签），禁止编造。
-    只输出 JSON：{"entries":[{"summary":"…","evidence":"…","phenomenon":{…},"spatiotemporal":{…},"causality":{…},"existential":{…}}]}
+    你是「按天落地」整理器。输入含落地日文件名与 WebUI 对话。
+    每条事实必须填充四维（禁止全空对象）：
+    - phenomenon: entity[]、category[]（从 Architecture|CodeBug|Algorithm|ProductLog|Topic 等选）、artifacts[]（可选）
+    - spatiotemporal: chronos（ISO 或空）、kairos、domain（如 portal/webui）
+    - causality: intent、action[]、outcome、evolution_potential（High|Medium|Low）
+    - existential: cognitive_align、mood_tone、persona_shift[]
+    禁止编造。只输出 JSON：
+    {"entries":[{"summary":"…","evidence":"摘录","phenomenon":{"entity":["…"],"category":["Architecture"]},"spatiotemporal":{"kairos":"Routine_Turn","domain":"portal/webui"},"causality":{"intent":"…","outcome":"Unknown","evolution_potential":"Low"},"existential":{"cognitive_align":"Calibrating","mood_tone":"Neutral"}}]}
 
   store_person_system: |
-    你是「用户画像」维护器。根据本轮对话更新 person.md（Markdown）。
-    须覆盖：称呼与身份、习惯与偏好、常用话术、思维链路、情绪特征、其它观察（23形态等人格仅作用户自述归纳并标注不确定性）。
-    只输出 JSON：{"person_markdown":"完整 person.md 正文"}
+    你是「用户画像」维护器。输出完整 person.md（Markdown），章节：称呼与身份、习惯与偏好、常用话术、思维链路、情绪特征、其它观察。
+    只输出 JSON：{"person_markdown":"…"}
 
   store_map_system: |
-    你是「地图热索引」维护器。维护 map.md：只记录最近几天高价值摘要，每条含：
-    - 标题式摘要、梳理好的标签（Entity/Category/Kairos 等）
-    - 指针：参见 storage/history/YYYY-MM-DD.jsonl 或 fact-id
-    不记录代码细节。禁止编造。只输出 JSON：{"map_markdown":"完整 map.md 正文"}
+    你是「地图热索引」维护器。维护 map.md：每条高价值摘要 + 标签 + 指针。
+    指针 **只能** 使用 user 消息「允许引用的落地文件」列表中的路径（storage/history/YYYY-MM-DD.jsonl）。
+    禁止编造日期。只输出 JSON：{"map_markdown":"…"}
 
   store_prefetch_system: |
-    你是「分支预测」器。根据用户画像、地图、最近对话，预测用户接下来最可能问的 N 个问题（N 由 user 消息给出）。
-    问题应具体、可检索。只输出 JSON：{"questions":["问题1","问题2",…]}
+    预测用户接下来最可能问的 N 个问题（N 见 user）。只输出 JSON：{"questions":["…"]}
 
   retrieve_gate_system: |
-    你是 Soul 取出「过程控制」判定器。输入：用户当前输入、LLM 预取缓存、map.md、person.md、soul（只读）。
-    若预取缓存+地图已足够回答：走快通道。
-    只输出 JSON 二选一：
-    {"sufficient":true,"hints_markdown":"按用户画像习惯整理的协作提示（勿编造；勿含 Memory/exec 路由）"}
-    或 {"sufficient":false,"retrieval_tags":{"entities":[],"categories":[],"date_hints":[],"keywords":[]}}
+    判定器。若预取缓存+地图+person 足以回答用户输入则 sufficient=true 并输出 hints_markdown；否则 sufficient=false 且 retrieval_tags（entities/categories/date_hints/keywords）。
+    禁止 Memory/exec 路由。只输出 JSON。
 
   retrieve_compose_system: |
-    你是 Soul 取出「慢通道」总结器。输入：用户输入、Go 检索到的落地事实 JSON、map、person、预取缓存、soul（只读）。
-    基于真实材料总结协作提示，贴合用户画像表达习惯。只输出 JSON：{"hints_markdown":"…"}
+    慢通道总结。基于检索到的事实 JSON、map、person、cache、soul（只读）输出协作提示。
+    只输出 JSON：{"hints_markdown":"…"}

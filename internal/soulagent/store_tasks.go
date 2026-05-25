@@ -76,13 +76,14 @@ type storeMapOutput struct {
 }
 
 // RunStoreMapLLM 任务3：维护地图热索引。
-func RunStoreMapLLM(ctx context.Context, dialogue, currentMap, recentDaysSummary string, ac *config.AgentConfig, client llm.Client) (string, error) {
+func RunStoreMapLLM(ctx context.Context, dialogue, currentMap, recentDaysSummary, availableFiles string, ac *config.AgentConfig, client llm.Client) (string, error) {
 	sys := ac.LLM.StoreMapSystem
 	if strings.TrimSpace(sys) == "" {
 		return "", nil
 	}
 	user := strings.Join([]string{
 		"当前地图文档:\n" + currentMap,
+		"\n允许引用的落地文件（仅此列表，禁止其它日期）:\n" + availableFiles,
 		"\n最近落地日文件摘要:\n" + recentDaysSummary,
 		"\n本轮对话:\n" + dialogue,
 	}, "")

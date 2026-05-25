@@ -40,9 +40,10 @@ func (d *DailyHistoryStore) AppendDay(facts []Fact, day time.Time) error {
 	}
 	defer f.Close()
 	now := day.UTC().Format(time.RFC3339)
+	seq := time.Now().UnixNano()
 	for i := range facts {
 		if facts[i].ID == "" {
-			facts[i].ID = fmt.Sprintf("fact-%s-%d", day.Format("20060102"), i)
+			facts[i].ID = fmt.Sprintf("fact-%s-%d-%d", day.Format("20060102"), seq, i)
 		}
 		if facts[i].StoredAt == "" {
 			facts[i].StoredAt = now

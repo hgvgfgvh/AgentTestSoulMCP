@@ -1,15 +1,17 @@
-// soul-mcp：Soul MCP（三件套：history.facts.jsonl + person.yaml + soul.agent.yaml）
+// soul-mcp：Soul MCP v4（soul_store / soul_retrieve + 伴生开发对话台）
 package main
 
 import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"AgentTestSoulMCP/internal/config"
+	"AgentTestSoulMCP/internal/console"
 	"AgentTestSoulMCP/internal/engine"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,6 +21,8 @@ var (
 	dataDir      = flag.String("data", "", "SOUL_MCP_DATA_DIR")
 	agentCfgPath = flag.String("agent-config", "", "agentConfig/soul-agent.yaml")
 	engineKind   = flag.String("engine", "", "soul | stub")
+	consoleAddr  = flag.String("console", "", "仅启动开发对话台，如 127.0.0.1:8092")
+	httpAddr     = flag.String("http", "", "Streamable HTTP MCP + /console/")
 )
 
 func main() {
@@ -49,38 +53,109 @@ func main() {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "agent-test-soul",
 		Title:   "AgentTest Soul MCP",
-		Version: "0.3.0-llm-triad",
+		Version: "0.4.0-async-pipeline",
 	}, nil)
 	registerTools(server, eng)
 
+	consoleSrv, consoleErr := console.NewServer(dir, eng, acPath)
+	if consoleErr != nil {
+		log.Printf("[soul-mcp] console disabled: %v", consoleErr)
+		consoleSrv = nil
+	}
+
+	if addr := trim(*consoleAddr); addr != "" && trim(*httpAddr) == "" {
+		if consoleSrv == nil {
+			log.Fatalf("console: %v", consoleErr)
+		}
+		log.Printf("[soul-mcp] dev console http://%s/console/", addr)
+		if err := http.ListenAndServe(addr, consoleWithRoot(consoleSrv)); err != nil {
+			log.Fatalf("console: %v", err)
+		}
+		return
+	}
+
+	if addr := trim(*httpAddr); addr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+			return server
+		}, nil))
+		if consoleSrv != nil {
+			consoleSrv.MountPath(mux)
+			log.Printf("[soul-mcp] dev console http://%s/console/", addr)
+		}
+		log.Printf("[soul-mcp] streamable HTTP on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Fatalf("http: %v", err)
+		}
+		return
+	}
+
+	if consoleSrv != nil {
+		startConsoleBackground(consoleSrv, dir)
+	}
+
 	t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr}
+	log.Printf("[soul-mcp] stdio transport")
 	if err := server.Run(context.Background(), t); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
 
+func startConsoleBackground(consoleSrv *console.Server, dataDir string) {
+	if envTruthy(os.Getenv("SOUL_MCP_CONSOLE_DISABLE")) {
+		log.Printf("[soul-mcp] dev console disabled (SOUL_MCP_CONSOLE_DISABLE)")
+		return
+	}
+	addr := trim(os.Getenv("SOUL_MCP_CONSOLE_LISTEN"))
+	if addr == "" {
+		addr = "127.0.0.1:8092"
+	}
+	go func() {
+		log.Printf("[soul-mcp] dev console (stdio 伴生) http://%s/console/ data_dir=%s", addr, dataDir)
+		if err := http.ListenAndServe(addr, consoleWithRoot(consoleSrv)); err != nil {
+			log.Printf("[soul-mcp] dev console exit: %v", err)
+		}
+	}()
+}
+
+func consoleWithRoot(consoleSrv *console.Server) http.Handler {
+	mux := http.NewServeMux()
+	consoleSrv.MountPath(mux)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/console/", http.StatusFound)
+	})
+	return mux
+}
+
+func envTruthy(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func trim(s string) string { return strings.TrimSpace(s) }
+
 func resolveDataDir() string {
-	if d := strings.TrimSpace(*dataDir); d != "" {
+	if d := trim(*dataDir); d != "" {
 		return d
 	}
-	if d := strings.TrimSpace(os.Getenv("SOUL_MCP_DATA_DIR")); d != "" {
+	if d := trim(os.Getenv("SOUL_MCP_DATA_DIR")); d != "" {
 		return d
 	}
 	return "data"
 }
 
 func resolveAgentConfig() string {
-	if p := strings.TrimSpace(*agentCfgPath); p != "" {
+	if p := trim(*agentCfgPath); p != "" {
 		return p
 	}
 	return config.ResolveAgentConfigPath()
 }
 
 func resolveEngineKind() string {
-	if k := strings.TrimSpace(*engineKind); k != "" {
+	if k := trim(*engineKind); k != "" {
 		return k
 	}
-	if k := strings.TrimSpace(os.Getenv("SOUL_MCP_ENGINE")); k != "" {
+	if k := trim(os.Getenv("SOUL_MCP_ENGINE")); k != "" {
 		return k
 	}
 	return "soul"
@@ -95,7 +170,7 @@ func registerTools(server *mcp.Server, eng engine.Engine) {
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "soul_store",
-		Description: `存入 WebUI 对话。内部 LLM 拆分为 history.facts.jsonl，并更新 person.yaml。soul.agent.yaml 只读。`,
+		Description: `存入 WebUI 对话。异步：按天事实 + person + map + 预取缓存。`,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args storeArgs) (*mcp.CallToolResult, any, error) {
 		out := eng.Store(ctx, engine.StoreInput{
 			Content: args.Content, Source: args.Source, Kind: args.Kind, CorrelationID: args.CorrelationID,
@@ -109,7 +184,7 @@ func registerTools(server *mcp.Server, eng engine.Engine) {
 	}
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "soul_retrieve",
-		Description: `取出协作 hints。LLM 关联历史事实 + person.yaml + soul.agent.yaml，编排为 Markdown。`,
+		Description: `取出协作 hints（预取缓存 + 地图 + 画像 + 快慢双轨 LLM）。`,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args retrieveArgs) (*mcp.CallToolResult, any, error) {
 		out := eng.Retrieve(ctx, engine.RetrieveInput{Context: args.Context, QueryHint: args.QueryHint})
 		return textResult(out), nil, nil

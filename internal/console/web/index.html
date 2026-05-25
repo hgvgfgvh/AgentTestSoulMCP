@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Soul MCP 开发对话台</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>Soul MCP 开发对话台</h1>
+    <p class="sub">进程内直调 <code>soul_retrieve</code> / <code>soul_store</code>，跳过主系统 Plan 链路</p>
+    <div id="stats" class="stats"></div>
+  </header>
+  <main class="layout">
+    <section class="chat">
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <label>用户输入（retrieve 用）</label>
+        <textarea id="userInput" rows="3" placeholder="例如：昨天架构论文的结论是什么？"></textarea>
+        <label>助手回复（store 用，可留空仅测 retrieve）</label>
+        <textarea id="assistantInput" rows="3" placeholder="模拟 WebUI 助手回复…"></textarea>
+        <div class="actions">
+          <button type="button" id="btnRetrieve">仅 soul_retrieve</button>
+          <button type="button" id="btnTurn" class="primary">一轮：retrieve + store</button>
+          <button type="button" id="btnStore">仅 soul_store</button>
+        </div>
+      </div>
+    </section>
+    <aside class="panel">
+      <h2>Soul hints / 工具返回</h2>
+      <pre id="output">（等待操作）</pre>
+    </aside>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

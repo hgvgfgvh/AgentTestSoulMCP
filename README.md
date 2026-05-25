@@ -46,3 +46,16 @@ go build -o soul-mcp.exe ./cmd/soul-mcp
 ```
 
 `phase` 字段：`4-async-pipeline`
+
+## 开发对话台（跳过主系统 Plan）
+
+`soul-mcp` 以 **stdio** 启动时，默认在后台拉起 **`http://127.0.0.1:8092/console/`**（进程内直调 `soul_store` / `soul_retrieve`，不走 MCP 子进程）。
+
+| 环境变量 | 说明 |
+|----------|------|
+| `SOUL_MCP_CONSOLE_LISTEN` | 监听地址，默认 `127.0.0.1:8092` |
+| `SOUL_MCP_CONSOLE_DISABLE=1` | 关闭伴生控制台 |
+
+仅启动控制台：`soul-mcp.exe -console 127.0.0.1:8092`
+
+API：`GET /console/api/stats`，`POST /console/api/retrieve`，`POST /console/api/store`，`POST /console/api/turn`（先 retrieve，可选 store）。
