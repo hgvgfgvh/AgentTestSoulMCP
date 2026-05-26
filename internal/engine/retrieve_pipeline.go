@@ -24,9 +24,8 @@ func (e *SoulEngine) runRetrieve(ctx context.Context, query string) string {
 	if hasLLM {
 		client, _ = llm.ConfigFromEnv()
 	}
-	all := e.loadAllFacts()
-
 	if !hasLLM {
+		all := e.loadFactsForRetrieve(query, nil)
 		selected := recall.Select(all, query, e.agentCfg.Retrieve.MaxFactsInContext, time.Now())
 		return soulagent.FallbackRetrieveV4(query, personMD, mapMD, cacheMD, soulMD, selected, e.agentCfg.Retrieve.MaxHintsRunes)
 	}
@@ -45,6 +44,7 @@ func (e *SoulEngine) runRetrieve(ctx context.Context, query string) string {
 				searchQ = query + " " + extra
 			}
 		}
+		all := e.loadFactsForRetrieve(query, gate.RetrievalTags)
 		selected := recall.Select(all, searchQ, e.agentCfg.Retrieve.MaxFactsInContext, time.Now())
 		fb, _ := json.Marshal(selected)
 		composed, err := soulagent.RunRetrieveComposeLLM(ctx, query, personMD, mapMD, cacheMD, soulMD, string(fb), e.agentCfg, client)

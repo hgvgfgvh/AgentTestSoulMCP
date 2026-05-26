@@ -139,17 +139,3 @@ func (e *SoulEngine) buildPrefetchCache(ctx context.Context, jobID, dialogue, pe
 	doc.AggregateMarkdown = doc.RenderMarkdown()
 	_ = e.cache.Write(doc)
 }
-
-func (e *SoulEngine) loadAllFacts() []persistence.Fact {
-	days := e.agentCfg.Store.MapRecentDays
-	if days <= 0 {
-		days = 7
-	}
-	all, _ := e.daily.ListRecentDays(days, time.Now())
-	if e.legacy != nil {
-		if leg, err := e.legacy.List(); err == nil {
-			all = append(all, leg...)
-		}
-	}
-	return all
-}

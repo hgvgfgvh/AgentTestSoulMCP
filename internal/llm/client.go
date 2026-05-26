@@ -94,11 +94,54 @@ type chatResp struct {
 	} `json:"error"`
 }
 
-// ChatJSON 请求 JSON 回复。
+const nowContextSlotMinutes = 30
+
+// floorTo30Min 将时刻归入 30 分钟时间槽起点（利于 LLM 前缀 KV cache 命中）。
+func floorTo30Min(t time.Time) time.Time {
+	loc := t.Location()
+	t = t.In(loc)
+	m := t.Minute() - (t.Minute() % nowContextSlotMinutes)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), m, 0, 0, loc)
+}
+
+// FormatNowContext 每次 LLM 请求的 user 消息前缀：解析「昨天/今天」、chronos 等时以此为准。
+// 时间粒度为 30 分钟槽（不含秒），同一槽内多次请求前缀一致。
+func FormatNowContext(now time.Time) string {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	loc := now.Location()
+	local := now.In(loc)
+	slotStart := floorTo30Min(local)
+	slotEnd := slotStart.Add(nowContextSlotMinutes*time.Minute - time.Minute)
+	utcStart := slotStart.UTC()
+	utcEnd := slotEnd.UTC()
+	day := slotStart.Format("2006-01-02")
+	return fmt.Sprintf(
+		"## 当前时间节点（系统提供，勿编造；30分钟时间槽）\n"+
+			"- 本地时间槽: %s ~ %s\n"+
+			"- UTC 时间槽: %s ~ %s\n"+
+			"- 时区: %s\n"+
+			"- 今日（日历日）: %s\n"+
+			"- 昨日: %s\n"+
+			"- 前天: %s\n\n",
+		slotStart.Format("2006-01-02 15:04"),
+		slotEnd.Format("15:04"),
+		utcStart.Format("2006-01-02T15:04Z"),
+		utcEnd.Format("2006-01-02T15:04Z"),
+		loc.String(),
+		day,
+		slotStart.AddDate(0, 0, -1).Format("2006-01-02"),
+		slotStart.AddDate(0, 0, -2).Format("2006-01-02"),
+	)
+}
+
+// ChatJSON 请求 JSON 回复（user 前自动附带 FormatNowContext）。
 func (c *Client) ChatJSON(ctx context.Context, system, user string) (string, error) {
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 45 * time.Second}
 	}
+	user = FormatNowContext(time.Now()) + user
 	url := c.BaseURL + "/chat/completions"
 	body, _ := json.Marshal(chatReq{
 		Model: c.Model,

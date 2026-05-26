@@ -59,6 +59,8 @@ store:
 retrieve:
   max_facts_in_context: 24
   max_hints_runes: 2000
+  default_recent_days: 7
+  max_load_days: 90
 
 llm:
   store_daily_system: |
@@ -85,6 +87,7 @@ llm:
 
   retrieve_gate_system: |
     判定器。若预取缓存+地图+person 足以回答用户输入则 sufficient=true 并输出 hints_markdown；否则 sufficient=false 且 retrieval_tags（entities/categories/date_hints/keywords）。
+    user 消息开头的「当前时间节点」为系统 30 分钟时间槽（非秒级）；解析「昨天/今天/上周」与 date_hints 时必须与之对齐，勿臆造日期。
     禁止 Memory/exec 路由。只输出 JSON。
 
   retrieve_compose_system: |

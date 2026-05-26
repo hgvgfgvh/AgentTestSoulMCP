@@ -39,6 +39,14 @@ func ParseCues(query string, now time.Time) QueryCues {
 		cues.Time = dayWindow(today, loc)
 	case containsAny(q, "大前天"):
 		cues.Time = dayWindow(today.AddDate(0, 0, -3), loc)
+	case containsAny(q, "上个月", "上月"):
+		y, m, _ := today.Date()
+		firstThisMonth := time.Date(y, m, 1, 0, 0, 0, 0, loc)
+		cues.Time = TimeWindow{
+			Start:  firstThisMonth.AddDate(0, -1, 0),
+			End:    firstThisMonth,
+			Active: true,
+		}
 	case containsAny(q, "上周", "上星期"):
 		start := today.AddDate(0, 0, -7)
 		end := today
@@ -95,7 +103,7 @@ func containsAny(s string, subs ...string) bool {
 func stripTimeWords(q string) string {
 	for _, w := range []string{
 		"大前天", "前天", "昨天", "昨日", "今天", "今日",
-		"上周", "上星期", "这周", "本周", "这星期",
+		"上个月", "上月", "上周", "上星期", "这周", "本周", "这星期",
 		"最近", "近期", "什么时候", "哪天",
 	} {
 		q = strings.ReplaceAll(q, w, " ")

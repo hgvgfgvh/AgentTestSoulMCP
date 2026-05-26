@@ -38,6 +38,10 @@ type AgentConfig struct {
 	Retrieve struct {
 		MaxFactsInContext int `yaml:"max_facts_in_context"`
 		MaxHintsRunes     int `yaml:"max_hints_runes"`
+		// DefaultRecentDays 无时间线索时加载的最近日历日数。
+		DefaultRecentDays int `yaml:"default_recent_days"`
+		// MaxLoadDays 动态按时间窗/date_hints 加载时的日文件数上限。
+		MaxLoadDays int `yaml:"max_load_days"`
 	} `yaml:"retrieve"`
 
 	LLM struct {
@@ -116,6 +120,15 @@ func (c *AgentConfig) applyDefaults() {
 	}
 	if c.Retrieve.MaxHintsRunes <= 0 {
 		c.Retrieve.MaxHintsRunes = 2000
+	}
+	if c.Retrieve.DefaultRecentDays <= 0 {
+		c.Retrieve.DefaultRecentDays = c.Store.MapRecentDays
+		if c.Retrieve.DefaultRecentDays <= 0 {
+			c.Retrieve.DefaultRecentDays = 7
+		}
+	}
+	if c.Retrieve.MaxLoadDays <= 0 {
+		c.Retrieve.MaxLoadDays = 90
 	}
 }
 
